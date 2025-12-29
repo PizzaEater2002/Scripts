@@ -29,12 +29,6 @@ public class GameHUDManager : MonoBehaviour
 
     void Start()
     {
-        // Снимаем ограничение FPS
-    Application.targetFrameRate = 120; 
-    // Или даже 120, если экран поддерживает, но 60 будет достаточно для плавности
-    
-    // Отключаем VSync (вертикальную синхронизацию), она иногда мешает на мобилках
-    QualitySettings.vSyncCount = 0;
 
         // Показываем кнопки, если это телефон ИЛИ если мы включили галочку теста
         if (Application.isMobilePlatform || debugMobileOnPC)

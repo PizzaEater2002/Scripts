@@ -6,11 +6,11 @@ public class SledBikeController : MonoBehaviour
 {
     [Header("🎮 Настройки Управления")]
     [Range(0.1f, 1.0f)]
-    public float stickThreshold = 0.85f; // Порог для Нитро/Зарядки
+    public float stickThreshold = 0.85f; // Насколько сильно нужно тянуть джойстик
 
-    [Header("🤸 Трюки (Ограничения)")]
-    public float minTrickHeight = 2.5f; // Минимальная высота для начала трюка (чтобы не срабатывало на кочках)
-    public bool requireStickReset = true; // Нужно ли вернуть джойстик в центр перед трюком
+    [Header("🤸 Трюки (Безопасность)")]
+    public float minTrickHeight = 2.5f;   // Минимальная высота для начала трюка
+    public bool requireStickReset = true; // Нужно ли вернуть палец в центр перед трюком
 
     [Header("Настройки Движения")]
     public float acceleration = 60f;      
@@ -21,7 +21,7 @@ public class SledBikeController : MonoBehaviour
     public float minJumpForce = 300f;     
     public float maxJumpForce = 1000f;    
     public float chargeTime = 0.8f;       
-    public float squashAmount = 0.2f;     
+    public float squashAmount = 0.2f;     // Насколько приседает байк
     
     [Header("Воздух")]
     public float airPitchSpeed = 3f;      
@@ -30,8 +30,8 @@ public class SledBikeController : MonoBehaviour
     [Header("Визуал")]
     public float leanAngle = 35f;         
     public float leanSpeed = 5f;          
-    public Transform bikeModel; 
-    public Transform bikeMeshRoot; 
+    public Transform bikeModel;           // Весь корпус для наклона
+    public Transform bikeMeshRoot;        // Для приседания при прыжке
 
     [Header("Слои")]
     public LayerMask groundLayer;         
@@ -45,16 +45,16 @@ public class SledBikeController : MonoBehaviour
     private GameInput _input;  
     private Vector2 _controlInput; 
     
-    // Вектор трюка для менеджера
+    // Этот вектор читает BikeTrickManager
     public Vector2 TrickVector { get; private set; } 
 
     private float _jumpCharge = 0f;       
     private bool _isCharging = false;
     private Vector3 _originalMeshPos;     
-    private bool _trickInputLocked = false; // Флаг блокировки трюка
+    private bool _trickInputLocked = false; // Блокировка трюков
 
     public bool IsGrounded { get; private set; }
-    public float DistanceToGround { get; private set; } // Текущая высота
+    public float DistanceToGround { get; private set; } 
 
     void Awake()
     {
@@ -71,52 +71,50 @@ public class SledBikeController : MonoBehaviour
 
     void Update()
     {
-        // Передаем порог в джойстик
+        // Передаем настройку чувствительности в джойстик
         if (SmartJoystick.Instance != null)
             SmartJoystick.Instance.actionThreshold = stickThreshold;
 
-        CheckGroundStatus(); // Обновленная проверка земли и высоты
+        CheckGroundStatus(); 
         HandleInput();
         HandlePureJump();
         HandleVisuals();
     }
 
-    // Новый метод для умной проверки высоты
     void CheckGroundStatus()
     {
         RaycastHit hit;
-        // Пускаем луч вниз, чтобы узнать точную высоту
+        // Проверяем реальную высоту до земли
         if (Physics.Raycast(transform.position, Vector3.down, out hit, 100f, groundLayer))
         {
             DistanceToGround = hit.distance;
-            IsGrounded = DistanceToGround < 0.8f; // Считаем землей, если ближе 0.8м
+            IsGrounded = DistanceToGround < 0.8f; 
         }
         else
         {
-            DistanceToGround = 100f; // Мы высоко в небе
+            DistanceToGround = 100f; 
             IsGrounded = false;
         }
     }
 
     void HandleInput()
     {
-        // По умолчанию трюков нет
         TrickVector = Vector2.zero;
 
-        // --- МОБИЛКА ---
+        // --- МОБИЛЬНОЕ УПРАВЛЕНИЕ ---
         if (SmartJoystick.Instance != null && SmartJoystick.Instance.joystickBackground.gameObject.activeSelf)
         {
             Vector2 rawJoystick = SmartJoystick.Instance.InputVector;
 
             if (IsGrounded)
             {
-                // НА ЗЕМЛЕ
-                // Сбрасываем блокировку трюков, чтобы в следующем прыжке снова требовался сброс
-                _trickInputLocked = true; 
-
+                // НА ЗЕМЛЕ: Едем
+                _trickInputLocked = true; // Включаем защиту
                 float steer = SmartJoystick.Instance.Horizontal;
-                float gas = 1f;
-                if (SmartJoystick.Instance.IsCharging) gas = 0f;
+                float gas = 1f; // Всегда газ
+                
+                // Если тянем вниз (зарядка), газ отключаем
+                if (SmartJoystick.Instance.IsCharging) gas = 0.8f;
                 
                 ActivateBoost(SmartJoystick.Instance.IsNitro);
 
@@ -124,40 +122,30 @@ public class SledBikeController : MonoBehaviour
             }
             else
             {
-                // В ВОЗДУХЕ
+                // В ВОЗДУХЕ: Трюки
                 _controlInput = Vector2.zero;
-
-                // === ЛОГИКА ТРЮКОВ "КАК В PURE" ===
                 
-                // 1. Проверка Высоты: Достаточно ли мы высоко?
                 bool highEnough = DistanceToGround > minTrickHeight;
 
                 if (highEnough)
                 {
-                    // 2. Проверка Сброса Джойстика (Input Reset)
-                    // Если флаг Locked стоит - мы ждем, пока игрок отпустит джойстик
+                    // Если включена защита - ждем, пока игрок отпустит джойстик
                     if (_trickInputLocked && requireStickReset)
                     {
-                        // Если джойстик вернулся в центр (magnitude < 0.1)
-                        if (rawJoystick.magnitude < 0.1f)
-                        {
-                            _trickInputLocked = false; // Разблокируем! Можно делать трюк
-                        }
+                        if (rawJoystick.magnitude < 0.1f) _trickInputLocked = false; 
                     }
                     else
                     {
-                        // Если разблокировано - передаем управление в Трюки
                         TrickVector = rawJoystick;
                     }
                 }
                 else
                 {
-                    // Если мы слишком низко - трюки запрещены, и мы держим блокировку
-                    _trickInputLocked = true; 
+                    _trickInputLocked = true; // Слишком низко для трюков
                 }
             }
         }
-        // --- ПК ---
+        // --- ПК УПРАВЛЕНИЕ ---
         else
         {
             Vector2 keyboard = _input.Player.Move.ReadValue<Vector2>();
@@ -167,12 +155,8 @@ public class SledBikeController : MonoBehaviour
             }
             else {
                  _controlInput = Vector2.zero;
-                 
-                 // Для ПК логика высоты такая же
-                 if (DistanceToGround > minTrickHeight)
-                     TrickVector = keyboard; 
-                 else 
-                     TrickVector = Vector2.zero;
+                 if (DistanceToGround > minTrickHeight) TrickVector = keyboard; 
+                 else TrickVector = Vector2.zero;
             }
         }
     }
@@ -181,7 +165,7 @@ public class SledBikeController : MonoBehaviour
     {
         if (IsGrounded)
         {
-            // ПОВОРОТ
+            // Поворот
             if (_controlInput.x != 0)
             {
                 float turn = _controlInput.x * turnSpeed * Time.fixedDeltaTime;
@@ -189,7 +173,7 @@ public class SledBikeController : MonoBehaviour
                 _rb.MoveRotation(_rb.rotation * turnRotation);
             }
 
-            // ГАЗ
+            // Газ и тормоз
             if (_controlInput.y != 0)
             {
                 float speedLimit = maxSpeed * (_isBoosting ? 1.5f : 1f);
@@ -198,13 +182,14 @@ public class SledBikeController : MonoBehaviour
                     float currentAccel = acceleration;
                     if (_isBoosting && _controlInput.y > 0) currentAccel *= boostMultiplier; 
                     float force = _controlInput.y * currentAccel;
-                    if (_controlInput.y < 0) force *= 0.5f; 
+                    if (_controlInput.y < 0) force *= 0.5f; // Тормоз слабее газа
                     _rb.AddForce(transform.forward * force, ForceMode.Acceleration);
                 }
             }
         }
         else
         {
+            // Гравитация в воздухе
             _rb.AddForce(Vector3.down * extraGravity, ForceMode.Acceleration);
         }
     }
@@ -225,6 +210,7 @@ public class SledBikeController : MonoBehaviour
                 _jumpCharge += Time.deltaTime / chargeTime;
                 _jumpCharge = Mathf.Clamp01(_jumpCharge);
 
+                // Визуальное приседание
                 if (bikeMeshRoot != null)
                 {
                     float squashY = Mathf.Lerp(0, -squashAmount, _jumpCharge);
@@ -234,24 +220,20 @@ public class SledBikeController : MonoBehaviour
         }
         else
         {
+            // Прыжок!
             if (_isCharging)
             {
-                if (IsGrounded) PerformJump();
+                if (IsGrounded)
+                {
+                    float finalForce = Mathf.Lerp(minJumpForce, maxJumpForce, _jumpCharge);
+                    Vector3 jumpVector = (Vector3.up * 0.9f + transform.forward * 0.1f).normalized;
+                    _rb.AddForce(jumpVector * finalForce, ForceMode.Impulse);
+                }
             }
             _isCharging = false;
             _jumpCharge = 0f;
             if (bikeMeshRoot != null)
                 bikeMeshRoot.localPosition = Vector3.Lerp(bikeMeshRoot.localPosition, _originalMeshPos, 10f * Time.deltaTime);
-        }
-    }
-
-    void PerformJump()
-    {
-        if (IsGrounded)
-        {
-            float finalForce = Mathf.Lerp(minJumpForce, maxJumpForce, _jumpCharge);
-            Vector3 jumpVector = (Vector3.up * 0.9f + transform.forward * 0.1f).normalized;
-            _rb.AddForce(jumpVector * finalForce, ForceMode.Impulse);
         }
     }
 

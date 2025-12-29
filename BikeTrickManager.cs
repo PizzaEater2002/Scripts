@@ -2,151 +2,126 @@ using UnityEngine;
 
 public class BikeTrickManager : MonoBehaviour
 {
-    [Header("🔧 Настройки Разлета (Визуал)")]
-    public float expandDistance = 1.2f;   // Насколько далеко разлетаются детали
-    public float smoothness = 10f;        // Скорость анимации (чем больше, тем резче)
-    
-    [Header("🔥 Нитро Система")]
-    public float maxNitro = 100f;
-    public float nitroBurnRate = 40f;     // Сколько тратится в секунду
-    public float trickRewardRate = 30f;   // Сколько даем за трюк в секунду
-    
-    [Header("💀 Ссылки")]
-    public Transform[] trickParts;        // Сюда кидай колеса, руль, тело (все куски)
-    public RespawnManager respawnManager; // Ссылка на респаун (если есть)
+    [Header("Связи")]
+    public SledBikeController bikeController; // Ссылка на контроллер
 
-    // Приватные переменные
-    private SledBikeController _controller;
-    private Vector3[] _startPositions;    // Запоминаем где детали были
-    private float _currentNitro = 0f;
-    private float _expansionFactor = 0f;  // 0 = собран, 1 = разобран
+    [Header("Настройки Трюков")]
+    public float trickSpeed = 5f; // Как быстро детали разлетаются
+    public float returnSpeed = 10f; // Как быстро возвращаются
+
+    [Header("Детали для трюков")]
+    // Сюда перетащи: Руль, Колеса, Кузов (по отдельности)
+    public Transform[] trickParts; 
+
+    // Запоминаем начальные позиции деталей
+    private Vector3[] _originalPositions;
+    private Quaternion[] _originalRotations;
+
+    private bool _isTricking = false;
 
     void Start()
     {
-        _controller = GetComponent<SledBikeController>();
-        
-        // Запоминаем исходные позиции деталей
-        _startPositions = new Vector3[trickParts.Length];
-        for (int i = 0; i < trickParts.Length; i++)
+        // Если забыли привязать контроллер руками, ищем его сами
+        if (bikeController == null)
+            bikeController = GetComponent<SledBikeController>();
+
+        // Сохраняем, где стояли детали при старте
+        if (trickParts != null && trickParts.Length > 0)
         {
-            if (trickParts[i] != null)
-                _startPositions[i] = trickParts[i].localPosition;
+            _originalPositions = new Vector3[trickParts.Length];
+            _originalRotations = new Quaternion[trickParts.Length];
+
+            for (int i = 0; i < trickParts.Length; i++)
+            {
+                if (trickParts[i] != null)
+                {
+                    _originalPositions[i] = trickParts[i].localPosition;
+                    _originalRotations[i] = trickParts[i].localRotation;
+                }
+            }
         }
     }
 
     void Update()
     {
-        HandleNitroLogic();
-        HandleTrickLogic();
-    }
+        if (bikeController == null) return;
 
-    void HandleNitroLogic()
-    {
-        // 1. ТРАТА НИТРО (На земле)
-        // Проверяем, активировал ли контроллер буст (через джойстик вверх)
-        // (Смотрим приватное поле _isBoosting в контроллере через метод или добавляем свойство IsBoosting)
-        // Но пока сделаем проще: если джойстик в зоне Нитро
-        
-        bool isNitroInput = false;
-        if (SmartJoystick.Instance != null) isNitroInput = SmartJoystick.Instance.IsNitro;
-        
-        // Если есть топливо и мы жмем нитро
-        if (isNitroInput && _currentNitro > 0)
+        // 1. Читаем вектор трюка из контроллера
+        // (Контроллер сам решает, можно ли делать трюк по высоте и вводу)
+        Vector2 input = bikeController.TrickVector;
+
+        // 2. Если вектор есть — делаем трюк
+        if (input.magnitude > 0.1f)
         {
-            _controller.ActivateBoost(true); // Включаем физику ускорения
-            _currentNitro -= nitroBurnRate * Time.deltaTime;
+            _isTricking = true;
+            PerformTrick(input);
         }
         else
         {
-            _controller.ActivateBoost(false); // Выключаем
+            _isTricking = false;
+            ResetParts();
         }
-
-        // Ограничиваем бак
-        _currentNitro = Mathf.Clamp(_currentNitro, 0, maxNitro);
+        
+        // 3. Проверка на смерть (Крэш)
+        // Если мы приземлились (IsGrounded), но детали все еще вразброс (_isTricking)
+        if (bikeController.IsGrounded && _isTricking)
+        {
+             // Тут можно вызвать эффект взрыва или рестарт
+             Debug.Log("CRASH! Приземлился во время трюка!");
+             // Пока просто сбросим детали мгновенно
+             ResetPartsImmediate();
+        }
     }
 
-    void HandleTrickLogic()
+    void PerformTrick(Vector2 direction)
     {
-        // Берем вектор трюка из нашего контроллера (который берет его с джойстика в воздухе)
-        Vector2 input = _controller.TrickVector;
+        // Просто растаскиваем детали в стороны в зависимости от направления джойстика
+        // direction.x - влево/вправо
+        // direction.y - вверх/вниз
         
-        // Есть ли ввод трюка? (Если длина вектора > 0.1)
-        bool isTricking = input.magnitude > 0.1f;
-        
-        // Мы в воздухе?
-        bool inAir = !_controller.IsGrounded;
+        Vector3 moveOffset = new Vector3(direction.x, direction.y, 0) * 0.5f; // 0.5f - амплитуда разлета
 
-        if (inAir && isTricking)
+        for (int i = 0; i < trickParts.Length; i++)
         {
-            // --- ДЕЛАЕМ ТРЮК ---
-            
-            // 1. Плавно увеличиваем фактор разлета
-            _expansionFactor = Mathf.Lerp(_expansionFactor, 1f, smoothness * Time.deltaTime);
-
-            // 2. Начисляем нитро
-            _currentNitro += trickRewardRate * Time.deltaTime;
-
-            // 3. Двигаем детали
-            ApplyExplosion(input);
-        }
-        else
-        {
-            // --- СОБИРАЕМСЯ ---
-            
-            // Плавно уменьшаем фактор к нулю
-            _expansionFactor = Mathf.Lerp(_expansionFactor, 0f, smoothness * Time.deltaTime);
-            
-            // Возвращаем детали (передаем ноль)
-            ApplyExplosion(Vector2.zero);
-            
-            // ПРОВЕРКА НА КРАШ
-            // Если мы коснулись земли (inAir == false), но байк еще не собрался (_expansionFactor > 0.3f)
-            if (!inAir && _expansionFactor > 0.5f)
+            if (trickParts[i] != null)
             {
-                Crash();
+                // У каждой детали может быть своя логика, но пока сделаем общий "взрыв"
+                // Можно добавить Random, чтобы они летели хаотично
+                Vector3 individualOffset = moveOffset * (i % 2 == 0 ? 1 : -1); 
+                
+                Vector3 targetPos = _originalPositions[i] + individualOffset;
+                
+                // Плавное движение к позиции трюка
+                trickParts[i].localPosition = Vector3.Lerp(trickParts[i].localPosition, targetPos, trickSpeed * Time.deltaTime);
+                
+                // Вращение (для красоты)
+                trickParts[i].Rotate(Vector3.up * direction.x * 100f * Time.deltaTime);
             }
         }
     }
 
-    void ApplyExplosion(Vector2 direction)
+    void ResetParts()
     {
-        // Превращаем 2D вектор джойстика в 3D смещение
-        // X -> X, Y -> Y
-        Vector3 explosionDir = new Vector3(direction.x, direction.y, 0);
-
+        // Плавно возвращаем всё на место
         for (int i = 0; i < trickParts.Length; i++)
         {
-            if (trickParts[i] == null) continue;
-
-            // Формула: Старт + (Направление * Дистанцию * ФакторРазлета)
-            Vector3 targetPos = _startPositions[i] + (explosionDir * expandDistance * _expansionFactor);
-            
-            // Можно добавить немного "разнобоя", чтобы детали летели чуть веером, а не линией
-            // Например: targetPos += trickParts[i].up * 0.1f; 
-            
-            trickParts[i].localPosition = Vector3.Lerp(trickParts[i].localPosition, targetPos, smoothness * Time.deltaTime);
+            if (trickParts[i] != null)
+            {
+                trickParts[i].localPosition = Vector3.Lerp(trickParts[i].localPosition, _originalPositions[i], returnSpeed * Time.deltaTime);
+                trickParts[i].localRotation = Quaternion.Lerp(trickParts[i].localRotation, _originalRotations[i], returnSpeed * Time.deltaTime);
+            }
         }
     }
-
-    void Crash()
+    
+    void ResetPartsImmediate()
     {
-        Debug.Log("WASTED! Разбился при посадке.");
-        _expansionFactor = 0f;
-        _currentNitro = 0f;
-        
-        // Возвращаем детали на место мгновенно
         for (int i = 0; i < trickParts.Length; i++)
-             if(trickParts[i]) trickParts[i].localPosition = _startPositions[i];
-
-        if (respawnManager != null)
         {
-            respawnManager.Respawn();
-        }
-        else
-        {
-            // Временный респаун, если нет менеджера
-            // transform.position += Vector3.up * 2; 
-            // transform.rotation = Quaternion.identity;
+            if (trickParts[i] != null)
+            {
+                trickParts[i].localPosition = _originalPositions[i];
+                trickParts[i].localRotation = _originalRotations[i];
+            }
         }
     }
 }
